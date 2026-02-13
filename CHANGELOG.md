@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **BREAKING**: Fixed workflow to correctly implement release-based versioning
+- Action now creates official release tags (v1.0.0) when merging to release branches
+- Prerelease tags (v1.0.0-alpha.1, v1.0.0-fix.1, etc.) only created when `create-prerelease: "true"`
+- Adopted trunk-semver branch patterns and suffixes for consistency
+- Workflow now only triggers on `main` and `release/**` branches (removed feature/fix/docs/etc triggers)
+
+### Added
+- Support for all trunk-semver branch types: feature, fix, chore, docs, refactor, perf, test, build, ci, style
+- Each branch type gets appropriate suffix for prerelease tags (alpha, fix, chore, docs, etc.)
+- Custom `prerelease-suffix` input for feature branches (default: "alpha")
+
+### Removed
+- Removed `enable-pr-tags` input (replaced with `create-prerelease`)
+- Removed unnecessary workflow triggers on feature/fix/docs/etc branches
+- Removed `pr-number` and `pr-target` outputs (no longer needed)
+
 ## [1.0.0] - 2026-02-13
 
 ### Added
@@ -36,3 +53,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Prerelease support with configurable suffix (alpha, beta, rc, etc.)
 
 [Unreleased]: https://github.com/TheKathan/release-semver/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/TheKathan/release-semver/releases/tag/v1.0.0

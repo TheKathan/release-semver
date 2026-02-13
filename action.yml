@@ -1,5 +1,5 @@
 name: "Release Semver"
-description: "PR-based semantic versioning. Tags created on every PR commit. Feature/fix→release creates -feature.N/-fix.N tags. Release→main creates -rc.N tags. Hotfix→main creates -hotfix.N tags. Merge to main creates official release."
+description: "Release-based semantic versioning. Feature/fix→release creates prerelease tags. Release→main creates minor bump. Hotfix→main creates patch bump."
 author: "TheKathan"
 
 branding:
@@ -11,8 +11,12 @@ inputs:
     description: "Major version number"
     required: false
     default: "1"
-  enable-pr-tags:
-    description: "Enable automatic tagging on PR commits. Creates commit tags for feature/fix branches and prerelease tags for release/hotfix branches."
+  prerelease-suffix:
+    description: "Suffix for prerelease tags when merging to release branches (e.g., alpha, beta, rc)"
+    required: false
+    default: "alpha"
+  create-prerelease:
+    description: "Enable prerelease tagging when merging to release branches"
     required: false
     default: "false"
   github-token:
@@ -34,23 +38,17 @@ inputs:
 
 outputs:
   version:
-    description: "Calculated semantic version (e.g., v1.2.0-feature.1, v1.2.0-rc.1, v1.2.0)"
+    description: "Calculated semantic version (e.g., v1.2.0-alpha.1 or v1.2.0)"
     value: ${{ steps.version.outputs.version }}
   is-prerelease:
-    description: "Whether this is a prerelease (true for -rc/-hotfix tags, false for feature/fix/etc and official releases)"
+    description: "Whether this is a prerelease version"
     value: ${{ steps.version.outputs.is_prerelease }}
   branch:
     description: "Branch name used for versioning"
     value: ${{ steps.version.outputs.branch }}
   source-branch:
-    description: "Source branch from PR (for main merges)"
+    description: "Source branch from PR (for main/release merges)"
     value: ${{ steps.version.outputs.source_branch }}
-  pr-number:
-    description: "PR number (when creating PR tags)"
-    value: ${{ steps.version.outputs.pr_number }}
-  pr-target:
-    description: "PR target branch (when creating PR tags)"
-    value: ${{ steps.version.outputs.pr_target }}
   previous-version:
     description: "Previous version tag"
     value: ${{ steps.version.outputs.previous_version }}
@@ -80,7 +78,6 @@ runs:
           exit 0
         fi
 
-        # Get latest official version
         LATEST=$(git tag | grep -E "^v${{ inputs.major-version }}\.[0-9]+\.[0-9]+$" | sort -V | tail -n 1 || true)
         LATEST="${LATEST:-v${{ inputs.major-version }}.0.0}"
         IFS='.' read -r MAJ MIN PAT <<< "${LATEST#v}"
@@ -89,17 +86,14 @@ runs:
         BRANCH="${GITHUB_HEAD_REF:-${GITHUB_REF#refs/heads/}}"
         echo "Branch: $BRANCH"
 
-        # Check if we're on main (creating official release)
         if [[ "${{ github.event_name }}" == "push" ]] && [[ "$BRANCH" == "main" ]]; then
           echo "=== Push to main - creating official release ==="
 
-          # Get source branch from merged PR
           SOURCE=$(curl -s -H "Authorization: Bearer $GITHUB_TOKEN" \
             "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/pulls" | \
             jq -r '.[0].head.ref // empty' 2>/dev/null || echo "")
           echo "PR source branch: $SOURCE"
 
-          # Determine bump type based on source branch
           if [[ "$SOURCE" == release/* ]]; then
             MIN=$((MIN + 1)); PAT=0
             BUMP_TYPE="Minor"
@@ -118,38 +112,36 @@ runs:
           echo "is_prerelease=false" >> $GITHUB_OUTPUT
           echo "source_branch=$SOURCE" >> $GITHUB_OUTPUT
 
-        elif [[ "${{ inputs.enable-pr-tags }}" != "true" ]]; then
-          echo "PR tagging disabled (enable-pr-tags=false), skipping"
-          echo "skip_tag=true" >> $GITHUB_OUTPUT
-          exit 0
+        elif [[ "${{ github.event_name }}" == "push" ]] && [[ "$BRANCH" == release/* ]]; then
+          echo "=== Push to release branch - creating official release ==="
 
-        else
-          # PR tagging enabled - check if branch has open PR
-          echo "=== Checking for open PR (enable-pr-tags=true) ==="
+          SOURCE=$(curl -s -H "Authorization: Bearer $GITHUB_TOKEN" \
+            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/pulls" | \
+            jq -r '.[0].head.ref // empty' 2>/dev/null || echo "")
+          echo "PR source branch: $SOURCE"
 
-          PR_DATA=$(curl -s -H "Authorization: Bearer $GITHUB_TOKEN" \
-            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/pulls?head=$GITHUB_REPOSITORY_OWNER:$BRANCH&state=open" | \
-            jq -r '.[0] // empty' 2>/dev/null || echo "")
-
-          if [ -z "$PR_DATA" ] || [ "$PR_DATA" == "null" ]; then
-            echo "No open PR found for branch $BRANCH, skipping tag creation"
-            echo "skip_tag=true" >> $GITHUB_OUTPUT
-            exit 0
+          RELEASE_VERSION="${BRANCH#release/v}"
+          if [[ ! "$RELEASE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Invalid release branch name: $BRANCH. Expected format: release/vX.Y.Z"
+            exit 1
           fi
 
-          TARGET=$(echo "$PR_DATA" | jq -r '.base.ref // empty')
-          PR_NUMBER=$(echo "$PR_DATA" | jq -r '.number // empty')
-          echo "Found open PR #$PR_NUMBER: $BRANCH → $TARGET"
+          VERSION="v$RELEASE_VERSION"
+          BUMP_TYPE="Minor"
+          echo "is_prerelease=false" >> $GITHUB_OUTPUT
+          echo "source_branch=$SOURCE" >> $GITHUB_OUTPUT
 
-          # Determine version bump and suffix based on branch pattern (like trunk-semver)
+        elif [[ "${{ inputs.create-prerelease }}" == "true" ]]; then
+          echo "=== Prerelease mode enabled ==="
+
           BUMP_TYPE="Patch"
           case "$BRANCH" in
             feature/*|feat/*)
               MIN=$((MIN + 1)); PAT=0
               BUMP_TYPE="Minor"
-              SUFFIX="feature"
+              SUFFIX="alpha"
               ;;
-            fix/*|bugfix/*)
+            fix/*|hotfix/*|bugfix/*)
               PAT=$((PAT + 1))
               SUFFIX="fix"
               ;;
@@ -185,56 +177,28 @@ runs:
               PAT=$((PAT + 1))
               SUFFIX="style"
               ;;
-            release/*)
-              if [[ "$TARGET" == "main" ]]; then
-                MIN=$((MIN + 1)); PAT=0
-                BUMP_TYPE="Minor"
-                SUFFIX="rc"
-                IS_PRERELEASE="true"
-              else
-                echo "::error::Release branches can only have PRs to main"
-                exit 1
-              fi
-              ;;
-            hotfix/*)
-              if [[ "$TARGET" == "main" ]]; then
-                PAT=$((PAT + 1))
-                SUFFIX="hotfix"
-                IS_PRERELEASE="true"
-              else
-                echo "::error::Hotfix branches can only have PRs to main"
-                exit 1
-              fi
-              ;;
             *)
               echo "::error::Branch '$BRANCH' does not match expected patterns"
-              echo "Supported patterns: feature/*, fix/*, chore/*, docs/*, refactor/*, perf/*, test/*, build/*, ci/*, style/*, release/* (to main), hotfix/* (to main)"
+              echo "Supported patterns: feature/*, fix/*, chore/*, docs/*, refactor/*, perf/*, test/*, build/*, ci/*, style/*"
               exit 1
               ;;
           esac
 
-          # Verify target branch
-          if [[ "$TARGET" != "main" ]] && [[ "$TARGET" != release/* ]]; then
-            echo "::error::PRs must target either 'main' or 'release/*' branches"
-            exit 1
+          if [[ "$BRANCH" == feature/* ]] || [[ "$BRANCH" == feat/* ]]; then
+            SUFFIX="${{ inputs.prerelease-suffix }}"
           fi
 
-          # Find next counter for this suffix
           BASE_VERSION="v$MAJ.$MIN.$PAT"
           COUNTER=$(git tag | grep -E "^${BASE_VERSION}-${SUFFIX}\.[0-9]+$" | \
             tail -n 1 | grep -oE "[0-9]+$" || echo "0")
 
           VERSION="${BASE_VERSION}-${SUFFIX}.$((COUNTER + 1))"
+          echo "is_prerelease=true" >> $GITHUB_OUTPUT
 
-          # Only release/hotfix to main are prereleases
-          if [[ "$IS_PRERELEASE" == "true" ]]; then
-            echo "is_prerelease=true" >> $GITHUB_OUTPUT
-          else
-            echo "is_prerelease=false" >> $GITHUB_OUTPUT
-          fi
-
-          echo "pr_number=$PR_NUMBER" >> $GITHUB_OUTPUT
-          echo "pr_target=$TARGET" >> $GITHUB_OUTPUT
+        else
+          echo "Not on main or release branch, and prerelease disabled. Skipping versioning."
+          echo "skip_tag=true" >> $GITHUB_OUTPUT
+          exit 0
         fi
 
         echo "version=$VERSION" >> $GITHUB_OUTPUT
@@ -319,7 +283,6 @@ runs:
         VERSION="${{ steps.version.outputs.version }}"
         IS_PRERELEASE="${{ steps.version.outputs.is_prerelease }}"
 
-        # Check if tag already exists
         if git rev-parse "$VERSION" >/dev/null 2>&1; then
           echo "Tag $VERSION already exists, skipping"
           exit 0
@@ -329,7 +292,6 @@ runs:
         git push origin "$VERSION"
         echo "✅ Created and pushed tag: $VERSION"
 
-        # Update major version tag for official releases only
         if [[ "$IS_PRERELEASE" == "false" ]]; then
           MAJOR_TAG=$(echo "$VERSION" | grep -oE "^v[0-9]+" || true)
           if [[ -n "$MAJOR_TAG" ]]; then

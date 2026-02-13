@@ -11,8 +11,12 @@ inputs:
     description: "Major version number"
     required: false
     default: "1"
-  enable-pr-tags:
-    description: "Enable automatic tagging on PR commits. Creates commit tags for feature/fix branches and prerelease tags for release/hotfix branches."
+  prerelease-suffix:
+    description: "Suffix for prerelease tags when merging to release branches (e.g., alpha, beta, rc)"
+    required: false
+    default: "alpha"
+  create-prerelease:
+    description: "Enable prerelease tagging when merging to release branches"
     required: false
     default: "false"
   github-token:

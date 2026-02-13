@@ -24,7 +24,7 @@ jobs:
         uses: ./
         with:
           major-version: "1"
-          create-prerelease: "false"  # Set to "true" to enable prerelease tags
+          create-prerelease: "false"
           add-to-summary: "true"
 
       - name: Create GitHub release (main only)

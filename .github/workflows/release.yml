@@ -1,0 +1,52 @@
+name: Release
+
+on:
+  push:
+    branches:
+      - main
+      - 'release/**'
+      - 'hotfix/**'
+      - 'feature/**'
+      - 'fix/**'
+      - 'feat/**'
+      - 'bugfix/**'
+
+jobs:
+  create-version:
+    name: Create Version Tag
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Create version tag
+        id: version
+        uses: ./
+        with:
+          major-version: "1"
+          enable-pr-tags: "true"  # Enable PR-based tagging
+          add-to-summary: "true"
+
+      - name: Create GitHub release (main only)
+        if: |
+          github.ref == 'refs/heads/main' &&
+          steps.version.outputs.is-prerelease == 'false' &&
+          steps.version.outputs.skip_tag != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+
+          if gh release view "$VERSION" >/dev/null 2>&1; then
+            echo "Release $VERSION already exists, skipping"
+            exit 0
+          fi
+
+          gh release create "$VERSION" \
+            --title "$VERSION" \
+            --generate-notes

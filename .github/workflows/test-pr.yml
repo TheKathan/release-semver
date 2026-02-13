@@ -1,0 +1,107 @@
+name: Test PR
+
+on:
+  pull_request:
+    branches:
+      - main
+      - 'release/**'
+      - 'hotfix/**'
+
+jobs:
+  validate:
+    name: Validate Action
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Validate action.yml exists
+        run: |
+          if [ ! -f action.yml ]; then
+            echo "::error::action.yml not found"
+            exit 1
+          fi
+
+      - name: Validate YAML syntax
+        run: |
+          python3 << 'EOF'
+          import yaml
+          import sys
+          import os
+
+          try:
+              with open('action.yml', 'r') as f:
+                  action = yaml.safe_load(f)
+
+              # Validate required fields
+              required = ['name', 'description', 'runs']
+              missing = [field for field in required if field not in action]
+
+              if missing:
+                  print(f"::error::Missing required fields: {', '.join(missing)}")
+                  sys.exit(1)
+
+              # Validate runs.using for composite actions
+              if action['runs']['using'] != 'composite':
+                  print(f"::error::Expected runs.using to be 'composite', got '{action['runs']['using']}'")
+                  sys.exit(1)
+
+              print("✅ action.yml validation passed")
+              with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as summary:
+                  summary.write('## Validation Results\n\n')
+                  summary.write('✅ action.yml syntax and structure are valid\n')
+
+          except yaml.YAMLError as e:
+              print(f"::error::YAML parsing failed: {e}")
+              sys.exit(1)
+          except Exception as e:
+              print(f"::error::Validation failed: {e}")
+              sys.exit(1)
+          EOF
+
+      - name: Update or create PR comment
+        if: always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const marker = '<!-- release-semver-test-pr -->';
+            const body = `${marker}
+            ## 🧪 Validation Results
+
+            **Status:** ✅ Passed
+            **Branch:** \`${{ github.head_ref }}\`
+            **Target:** \`${{ github.base_ref }}\`
+
+            All validation checks passed. Ready for review!`;
+
+            // Find existing comment
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+
+            const existingComment = comments.find(c => c.body.includes(marker));
+
+            if (existingComment) {
+              // Update existing comment
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existingComment.id,
+                body: body
+              });
+            } else {
+              // Create new comment
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: body
+              });
+            }

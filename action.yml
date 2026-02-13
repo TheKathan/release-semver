@@ -89,17 +89,14 @@ runs:
         BRANCH="${GITHUB_HEAD_REF:-${GITHUB_REF#refs/heads/}}"
         echo "Branch: $BRANCH"
 
-        # Check if we're on main (creating official release)
         if [[ "${{ github.event_name }}" == "push" ]] && [[ "$BRANCH" == "main" ]]; then
           echo "=== Push to main - creating official release ==="
 
-          # Get source branch from merged PR
           SOURCE=$(curl -s -H "Authorization: Bearer $GITHUB_TOKEN" \
             "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/pulls" | \
             jq -r '.[0].head.ref // empty' 2>/dev/null || echo "")
           echo "PR source branch: $SOURCE"
 
-          # Determine bump type based on source branch
           if [[ "$SOURCE" == release/* ]]; then
             MIN=$((MIN + 1)); PAT=0
             BUMP_TYPE="Minor"
@@ -118,38 +115,40 @@ runs:
           echo "is_prerelease=false" >> $GITHUB_OUTPUT
           echo "source_branch=$SOURCE" >> $GITHUB_OUTPUT
 
-        elif [[ "${{ inputs.enable-pr-tags }}" != "true" ]]; then
-          echo "PR tagging disabled (enable-pr-tags=false), skipping"
-          echo "skip_tag=true" >> $GITHUB_OUTPUT
-          exit 0
+        elif [[ "${{ github.event_name }}" == "push" ]] && [[ "$BRANCH" == release/* ]]; then
+          echo "=== Push to release branch - creating RC tag ==="
 
-        else
-          # PR tagging enabled - check if branch has open PR
-          echo "=== Checking for open PR (enable-pr-tags=true) ==="
+          SOURCE=$(curl -s -H "Authorization: Bearer $GITHUB_TOKEN" \
+            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/pulls" | \
+            jq -r '.[0].head.ref // empty' 2>/dev/null || echo "")
+          echo "PR source branch: $SOURCE"
 
-          PR_DATA=$(curl -s -H "Authorization: Bearer $GITHUB_TOKEN" \
-            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/pulls?head=$GITHUB_REPOSITORY_OWNER:$BRANCH&state=open" | \
-            jq -r '.[0] // empty' 2>/dev/null || echo "")
-
-          if [ -z "$PR_DATA" ] || [ "$PR_DATA" == "null" ]; then
-            echo "No open PR found for branch $BRANCH, skipping tag creation"
-            echo "skip_tag=true" >> $GITHUB_OUTPUT
-            exit 0
+          RELEASE_VERSION="${BRANCH#release/v}"
+          if [[ ! "$RELEASE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Invalid release branch name: $BRANCH. Expected format: release/vX.Y.Z"
+            exit 1
           fi
 
-          TARGET=$(echo "$PR_DATA" | jq -r '.base.ref // empty')
-          PR_NUMBER=$(echo "$PR_DATA" | jq -r '.number // empty')
-          echo "Found open PR #$PR_NUMBER: $BRANCH → $TARGET"
+          BASE_VERSION="v$RELEASE_VERSION"
+          COUNTER=$(git tag | grep -E "^${BASE_VERSION}-rc\.[0-9]+$" | \
+            tail -n 1 | grep -oE "[0-9]+$" || echo "0")
 
-          # Determine version bump and suffix based on branch pattern (like trunk-semver)
+          VERSION="${BASE_VERSION}-rc.$((COUNTER + 1))"
+          BUMP_TYPE="Minor"
+          echo "is_prerelease=true" >> $GITHUB_OUTPUT
+          echo "source_branch=$SOURCE" >> $GITHUB_OUTPUT
+
+        elif [[ "${{ inputs.create-prerelease }}" == "true" ]]; then
+          echo "=== Prerelease mode enabled ==="
+
           BUMP_TYPE="Patch"
           case "$BRANCH" in
             feature/*|feat/*)
               MIN=$((MIN + 1)); PAT=0
               BUMP_TYPE="Minor"
-              SUFFIX="feature"
+              SUFFIX="alpha"
               ;;
-            fix/*|bugfix/*)
+            fix/*|hotfix/*|bugfix/*)
               PAT=$((PAT + 1))
               SUFFIX="fix"
               ;;
@@ -185,56 +184,28 @@ runs:
               PAT=$((PAT + 1))
               SUFFIX="style"
               ;;
-            release/*)
-              if [[ "$TARGET" == "main" ]]; then
-                MIN=$((MIN + 1)); PAT=0
-                BUMP_TYPE="Minor"
-                SUFFIX="rc"
-                IS_PRERELEASE="true"
-              else
-                echo "::error::Release branches can only have PRs to main"
-                exit 1
-              fi
-              ;;
-            hotfix/*)
-              if [[ "$TARGET" == "main" ]]; then
-                PAT=$((PAT + 1))
-                SUFFIX="hotfix"
-                IS_PRERELEASE="true"
-              else
-                echo "::error::Hotfix branches can only have PRs to main"
-                exit 1
-              fi
-              ;;
             *)
               echo "::error::Branch '$BRANCH' does not match expected patterns"
-              echo "Supported patterns: feature/*, fix/*, chore/*, docs/*, refactor/*, perf/*, test/*, build/*, ci/*, style/*, release/* (to main), hotfix/* (to main)"
+              echo "Supported patterns: feature/*, fix/*, chore/*, docs/*, refactor/*, perf/*, test/*, build/*, ci/*, style/*"
               exit 1
               ;;
           esac
 
-          # Verify target branch
-          if [[ "$TARGET" != "main" ]] && [[ "$TARGET" != release/* ]]; then
-            echo "::error::PRs must target either 'main' or 'release/*' branches"
-            exit 1
+          if [[ "$BRANCH" == feature/* ]] || [[ "$BRANCH" == feat/* ]]; then
+            SUFFIX="${{ inputs.prerelease-suffix }}"
           fi
 
-          # Find next counter for this suffix
           BASE_VERSION="v$MAJ.$MIN.$PAT"
           COUNTER=$(git tag | grep -E "^${BASE_VERSION}-${SUFFIX}\.[0-9]+$" | \
             tail -n 1 | grep -oE "[0-9]+$" || echo "0")
 
           VERSION="${BASE_VERSION}-${SUFFIX}.$((COUNTER + 1))"
+          echo "is_prerelease=true" >> $GITHUB_OUTPUT
 
-          # Only release/hotfix to main are prereleases
-          if [[ "$IS_PRERELEASE" == "true" ]]; then
-            echo "is_prerelease=true" >> $GITHUB_OUTPUT
-          else
-            echo "is_prerelease=false" >> $GITHUB_OUTPUT
-          fi
-
-          echo "pr_number=$PR_NUMBER" >> $GITHUB_OUTPUT
-          echo "pr_target=$TARGET" >> $GITHUB_OUTPUT
+        else
+          echo "Not on main or release branch, and prerelease disabled. Skipping versioning."
+          echo "skip_tag=true" >> $GITHUB_OUTPUT
+          exit 0
         fi
 
         echo "version=$VERSION" >> $GITHUB_OUTPUT
